@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -6,9 +6,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using Extensions.Common;
-using JetBrains.Annotations;
-using Microsoft.Extensions.Logging;
-using Other;
 using Playnite.SDK;
 using Playnite.SDK.Events;
 using Playnite.SDK.Models;
@@ -16,12 +13,12 @@ using Playnite.SDK.Plugins;
 
 namespace GameManagement;
 
-[UsedImplicitly]
 public class GameManagementPlugin : GenericPlugin
 {
     private readonly IPlayniteAPI _playniteAPI;
     private readonly StorageInfo _storageInfo;
-    private readonly ILogger<GameManagementPlugin> _logger;
+    private readonly ILogger _logger;
+    private readonly CancellationTokenSource _source = new();
 
     private string StoragePath => Path.Combine(GetPluginUserDataPath(), "storage.json");
 
@@ -30,16 +27,18 @@ public class GameManagementPlugin : GenericPlugin
     public GameManagementPlugin(IPlayniteAPI playniteAPI) : base(playniteAPI)
     {
         _playniteAPI = playniteAPI;
-        _logger = CustomLogger.GetLogger<GameManagementPlugin>(nameof(GameManagementPlugin));
-
-        AssemblyLoader.ValidateReferencedAssemblies(_logger);
-
+        _logger = playniteAPI.CreateLogger();
         _storageInfo = new StorageInfo(_playniteAPI);
         _storageInfo.LoadFromFile(StoragePath);
     }
 
     public override IEnumerable<GameMenuItem> GetGameMenuItems(GetGameMenuItemsArgs args)
     {
+        if (args.IsGlobalSearchRequest)
+        {
+            yield break;
+        }
+
         yield return new GameMenuItem
         {
             Action = UninstallGameMenuAction,
@@ -70,18 +69,25 @@ public class GameManagementPlugin : GenericPlugin
     private List<Game> UninstallGames(GameMenuItemActionArgs args)
     {
         var games = args.Games;
-        if (games is null || !games.Any()) return new List<Game>();
-
-        var result = _playniteAPI.Dialogs.ShowMessage($"Do you really want to uninstall {games.Count} game(s)?",
-            "Confirmation", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (result != MessageBoxResult.Yes)
+        if (games is null || games.Count == 0)
         {
             return new List<Game>();
         }
 
-        _logger.LogInformation("Uninstalling {Count} game(s)", games.Count.ToString());
+        var confirmation = _playniteAPI.Dialogs.ShowMessage(
+            "Do you really want to delete the installation folder for " + games.Count + " game(s)?",
+            "Confirmation",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
 
-        var actuallyUninstalledGames = new List<Game>(games.Count);
+        if (confirmation != MessageBoxResult.Yes)
+        {
+            return new List<Game>();
+        }
+
+        _logger.Info("Uninstalling " + games.Count + " game(s).");
+        var uninstalledGames = new List<Game>(games.Count);
+        var failures = new List<string>();
 
         _playniteAPI.Dialogs.ActivateGlobalProgress(progressArgs =>
         {
@@ -92,50 +98,110 @@ public class GameManagementPlugin : GenericPlugin
             {
                 if (progressArgs.CancelToken.IsCancellationRequested)
                 {
-                    _logger.LogInformation("Uninstallation has been canceled");
-                    return;
+                    _logger.Info("Uninstallation was canceled.");
+                    break;
                 }
-
-                _logger.LogDebug("Uninstalling {Name}", game.Name);
 
                 progressArgs.CurrentProgressValue += 1;
-                progressArgs.Text = $"Uninstalling {game.Name}";
+                progressArgs.Text = "Uninstalling " + game.Name;
 
-                if (game.InstallationStatus != InstallationStatus.Installed
-                    || string.IsNullOrWhiteSpace(game.InstallDirectory)
-                    || !Directory.Exists(game.InstallDirectory))
+                try
                 {
-                    _logger.LogError("Game {Name} is not installed!", game.Name);
-                    continue;
-                }
+                    if (game.InstallationStatus != InstallationStatus.Installed)
+                    {
+                        throw new InvalidOperationException("Playnite does not mark this game as installed.");
+                    }
 
-                Directory.Delete(game.InstallDirectory, true);
-                game.IsInstalled = false;
-                actuallyUninstalledGames.Add(game);
-                _storageInfo.RemoveStorageInfo(game);
+                    var installDirectory = GetSafeInstallDirectory(game);
+                    Directory.Delete(installDirectory, true);
+                    uninstalledGames.Add(game);
+                }
+                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
+                                           ex is ArgumentException || ex is InvalidOperationException ||
+                                           ex is NotSupportedException || ex is System.Security.SecurityException)
+                {
+                    failures.Add(game.Name + ": " + ex.Message);
+                    _logger.Error(ex, "Could not uninstall " + game.Name + ".");
+                }
+            }
+        }, new GlobalProgressOptions("Uninstalling " + games.Count + " game(s)", true));
+
+        foreach (var game in uninstalledGames)
+        {
+            game.IsInstalled = false;
+            _playniteAPI.Database.Games.Update(game);
+            _storageInfo.RemoveStorageInfo(game);
+        }
+
+        try
+        {
+            _storageInfo.SaveToFile(StoragePath);
+        }
+        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+        {
+            _logger.Error(ex, "Could not save storage statistics.");
+        }
+
+        if (failures.Count > 0)
+        {
+            var details = string.Join(Environment.NewLine, failures.Take(5));
+            if (failures.Count > 5)
+            {
+                details += Environment.NewLine + "And " + (failures.Count - 5) + " more.";
             }
 
-            _storageInfo.SaveToFile(StoragePath);
-        }, new GlobalProgressOptions($"Uninstalling {games.Count} game(s)", true));
+            _playniteAPI.Dialogs.ShowErrorMessage(
+                "Some game folders could not be deleted:" + Environment.NewLine + details,
+                "Game Management");
+        }
 
-        return actuallyUninstalledGames;
+        return uninstalledGames;
     }
 
-    private readonly CancellationTokenSource _source = new();
+    private static string GetSafeInstallDirectory(Game game)
+    {
+        if (string.IsNullOrWhiteSpace(game.InstallDirectory) || !Directory.Exists(game.InstallDirectory))
+        {
+            throw new DirectoryNotFoundException("The installation folder was not found.");
+        }
+
+        var fullPath = Path.GetFullPath(game.InstallDirectory);
+        var rootPath = Path.GetPathRoot(fullPath);
+        if (string.IsNullOrEmpty(rootPath) ||
+            string.Equals(
+                fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                rootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("The installation folder cannot be a drive root.");
+        }
+
+        return fullPath;
+    }
 
     public override void OnApplicationStarted(OnApplicationStartedEventArgs args)
     {
         Task.Run(() =>
         {
-            _storageInfo.UpdateStorageInfoForAllNewGames();
-            _storageInfo.SaveToFile(StoragePath);
+            try
+            {
+                _storageInfo.UpdateStorageInfoForAllNewGames();
+                _storageInfo.SaveToFile(StoragePath);
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Could not update storage statistics.");
+            }
         }, _source.Token);
     }
 
     public override void OnApplicationStopped(OnApplicationStoppedEventArgs args)
     {
-        if (_source.IsCancellationRequested) return;
-        _source.Cancel();
+        if (!_source.IsCancellationRequested)
+        {
+            _source.Cancel();
+        }
+
         _source.Dispose();
     }
 
