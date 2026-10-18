@@ -39,37 +39,40 @@ public class GameManagementPlugin : GenericPlugin
             yield break;
         }
 
-        yield return new GameMenuItem
+        if (args.Games is null || args.Games.Count == 0 || args.Games.Any(game => !CanUninstallAndHide(game)))
         {
-            Action = UninstallGameMenuAction,
-            Description = "Uninstall"
-        };
+            yield break;
+        }
 
         yield return new GameMenuItem
         {
-            Action = UninstallAndRemoveGameMenuAction,
-            Description = "Uninstall and Remove"
+            Action = UninstallAndHideGameMenuAction,
+            Description = "Uninstall and Hide"
         };
     }
 
-    private void UninstallGameMenuAction(GameMenuItemActionArgs args)
+    private void UninstallAndHideGameMenuAction(GameMenuItemActionArgs args)
     {
         UninstallGames(args);
     }
 
-    private void UninstallAndRemoveGameMenuAction(GameMenuItemActionArgs args)
+    private static bool CanUninstallAndHide(Game game)
     {
-        var games = UninstallGames(args);
-        foreach (var game in games)
-        {
-            _playniteAPI.Database.Games.Remove(game);
-        }
+        return game is not null &&
+               game.IsCustomGame &&
+               game.IsInstalled &&
+               !game.Hidden &&
+               !game.IsRunning &&
+               !game.IsInstalling &&
+               !game.IsUninstalling &&
+               !string.IsNullOrWhiteSpace(game.InstallDirectory) &&
+               Directory.Exists(game.InstallDirectory);
     }
 
     private List<Game> UninstallGames(GameMenuItemActionArgs args)
     {
         var games = args.Games;
-        if (games is null || games.Count == 0)
+        if (games is null || games.Count == 0 || games.Any(game => !CanUninstallAndHide(game)))
         {
             return new List<Game>();
         }
@@ -132,6 +135,7 @@ public class GameManagementPlugin : GenericPlugin
             try
             {
                 game.IsInstalled = false;
+                game.Hidden = true;
                 _playniteAPI.Database.Games.Update(game);
             }
             catch (Exception ex)
