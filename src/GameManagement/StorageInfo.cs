@@ -1,10 +1,11 @@
-﻿using System;
+using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 using Extensions.Common;
-using Microsoft.Toolkit.HighPerformance.Helpers;
 using Playnite.SDK;
 using Playnite.SDK.Data;
 using Playnite.SDK.Models;
@@ -17,7 +18,7 @@ public class StorageInfo
 
     public List<GameStorage> Games { get; set; } = new();
 
-    public string TotalSize => $"Total Size: {Games.Sum(x => x.SizeOnDisk).ToFileSizeString()}";
+    public string TotalSize => "Total Size: " + Games.Sum(x => x.SizeOnDisk).ToFileSizeString();
 
     public StorageInfo(IPlayniteAPI playniteAPI)
     {
@@ -26,39 +27,56 @@ public class StorageInfo
 
     public void LoadFromFile(string path)
     {
-        if (!File.Exists(path)) return;
-
-        var res = Serialization.FromJsonFile<List<GameStorage>>(path);
-        if (res is null || !res.Any()) return;
-
-        Games = res.Select(x =>
+        if (!File.Exists(path))
         {
-            x.PlayniteAPI = _playniteAPI;
-            return x;
-        }).ToList();
+            return;
+        }
+
+        try
+        {
+            var data = Serialization.FromJsonFile<List<GameStorage>>(path);
+            if (data is null)
+            {
+                return;
+            }
+
+            Games = data;
+            foreach (var game in Games)
+            {
+                game.PlayniteAPI = _playniteAPI;
+            }
+        }
+        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is FormatException)
+        {
+            Games = new List<GameStorage>();
+        }
     }
 
     public void SaveToFile(string path)
     {
         var json = Serialization.ToJson(Games);
-        if (json is null) throw new NotImplementedException();
+        if (json is null)
+        {
+            return;
+        }
 
         File.WriteAllText(path, json, Encoding.UTF8);
     }
 
-    private readonly struct CalculateStorageStruct : IRefAction<TempStorage>
+    private static bool TryGetDirectorySize(string path, out long size)
     {
-        public void Invoke(ref TempStorage item)
+        size = 0;
+        try
         {
-            item.GameStorage.SizeOnDisk = GetDirectorySize(item.Game.InstallDirectory);
+            size = Directory
+                .EnumerateFiles(path, "*", SearchOption.AllDirectories)
+                .Sum(file => new FileInfo(file).Length);
+            return true;
         }
-    }
-
-    private static long GetDirectorySize(string path)
-    {
-        return Directory
-            .EnumerateFiles(path, "*", SearchOption.AllDirectories)
-            .Sum(file => new FileInfo(file).Length);
+        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private static bool GameHasInstallDirectory(Game game)
@@ -68,30 +86,40 @@ public class StorageInfo
 
     public void UpdateStorageInfoForAllNewGames()
     {
+        var knownGameIds = new HashSet<Guid>(Games.Select(x => x.GameId));
         var games = _playniteAPI.Database.Games
-            .Where(dbGame => !Games.Any(savedGame => savedGame.GameId.Equals(dbGame.Id)))
-            .Where(GameHasInstallDirectory)
-            .Select(x => new TempStorage(x, new GameStorage(_playniteAPI)
+            .Where(game => !knownGameIds.Contains(game.Id) && GameHasInstallDirectory(game))
+            .ToArray();
+        var newStorage = new ConcurrentBag<GameStorage>();
+
+        Parallel.ForEach(games, game =>
         {
-            GameId = x.Id
-        })).ToArray();
+            if (TryGetDirectorySize(game.InstallDirectory, out var size))
+            {
+                newStorage.Add(new GameStorage(_playniteAPI)
+                {
+                    GameId = game.Id,
+                    SizeOnDisk = size
+                });
+            }
+        });
 
-        ParallelHelper.ForEach<TempStorage, CalculateStorageStruct>(games);
-
-        Games.AddRange(games.Select(x => x.GameStorage));
+        Games.AddRange(newStorage);
     }
 
     public void AddStorageInfo(Game game)
     {
-        if (!GameHasInstallDirectory(game)) return;
+        if (!GameHasInstallDirectory(game) || !TryGetDirectorySize(game.InstallDirectory, out var size))
+        {
+            return;
+        }
 
-        var storage = new GameStorage(_playniteAPI)
+        Games.RemoveAll(savedGame => savedGame.GameId.Equals(game.Id));
+        Games.Add(new GameStorage(_playniteAPI)
         {
             GameId = game.Id,
-            SizeOnDisk = GetDirectorySize(game.InstallDirectory)
-        };
-
-        Games.Add(storage);
+            SizeOnDisk = size
+        });
     }
 
     public void RemoveStorageInfo(Game game)
@@ -100,24 +128,14 @@ public class StorageInfo
     }
 }
 
-public readonly struct TempStorage
-{
-    public readonly Game Game;
-    public readonly GameStorage GameStorage;
-
-    public TempStorage(Game game, GameStorage gameStorage)
-    {
-        Game = game;
-        GameStorage = gameStorage;
-    }
-}
-
 public class GameStorage
 {
     [DontSerialize]
     public IPlayniteAPI? PlayniteAPI { get; set; }
 
-    public GameStorage() { }
+    public GameStorage()
+    {
+    }
 
     public GameStorage(IPlayniteAPI playniteAPI)
     {
@@ -128,7 +146,9 @@ public class GameStorage
 
     public long SizeOnDisk { get; set; }
 
-    [DontSerialize] public string FileSizeString => SizeOnDisk.ToFileSizeString();
+    [DontSerialize]
+    public string FileSizeString => SizeOnDisk.ToFileSizeString();
 
-    [DontSerialize] public string GameName => PlayniteAPI?.Database.Games.First(x => x.Id.Equals(GameId)).Name ?? string.Empty;
+    [DontSerialize]
+    public string GameName => PlayniteAPI?.Database.Games.FirstOrDefault(x => x.Id.Equals(GameId))?.Name ?? string.Empty;
 }
