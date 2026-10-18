@@ -1,7 +1,7 @@
 Id: GameManagement
 Name: Game Management Plugin
 Author: Slak-1
-Version: 2.7.0
+Version: 2.8.0
 Module: GameManagement.dll
 Type: GenericPlugin
 Links:
