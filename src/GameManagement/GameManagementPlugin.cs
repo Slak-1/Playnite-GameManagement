@@ -59,7 +59,6 @@ public class GameManagementPlugin : GenericPlugin
     private static bool CanUninstallAndHide(Game game)
     {
         return game is not null &&
-               game.IsCustomGame &&
                game.IsInstalled &&
                !game.Hidden &&
                !game.IsRunning &&
