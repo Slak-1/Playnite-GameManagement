@@ -27,7 +27,7 @@ public class GameManagementPlugin : GenericPlugin
     public GameManagementPlugin(IPlayniteAPI playniteAPI) : base(playniteAPI)
     {
         _playniteAPI = playniteAPI;
-        _logger = playniteAPI.CreateLogger();
+        _logger = LogManager.GetLogger(nameof(GameManagementPlugin));
         _storageInfo = new StorageInfo(_playniteAPI);
         _storageInfo.LoadFromFile(StoragePath);
     }
