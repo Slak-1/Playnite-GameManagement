@@ -1,0 +1,59 @@
+name: Package Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Build extension
+        run: dotnet build src/GameManagement/GameManagement.csproj --configuration Release
+
+      - name: Package with Playnite Toolbox
+        shell: pwsh
+        run: |
+          $archivePath = Join-Path $env:RUNNER_TEMP "playnite-10.62.7z"
+          $playnitePath = Join-Path $env:RUNNER_TEMP "playnite"
+          $outputPath = Join-Path $env:GITHUB_WORKSPACE "dist"
+
+          Invoke-WebRequest -Uri "https://github.com/JosefNemec/Playnite/releases/download/10.62/10.62.7z" -OutFile $archivePath
+          7z x $archivePath "-o$playnitePath" -y | Out-Null
+
+          $toolbox = Get-ChildItem -Path $playnitePath -Filter "Toolbox.exe" -File -Recurse | Select-Object -First 1
+          if ($null -eq $toolbox) {
+            throw "Toolbox.exe was not found in the Playnite archive."
+          }
+
+          New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
+          $extensionPath = Join-Path $env:GITHUB_WORKSPACE "src/GameManagement/bin/Release/net462"
+          & $toolbox.FullName pack $extensionPath $outputPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "Playnite Toolbox failed to package the extension."
+          }
+
+          $package = Get-ChildItem -Path $outputPath -Filter "*.pext" -File | Select-Object -First 1
+          if ($null -eq $package) {
+            throw "Playnite Toolbox did not produce a .pext package."
+          }
+
+          "PEXT_PATH=$($package.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Attach package to GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$env:RELEASE_TAG" "$env:PEXT_PATH" --clobber
