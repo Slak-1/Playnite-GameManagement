@@ -4,7 +4,7 @@ A standalone source copy of the GameManagement extension from [erri120/Playnite.
 
 This fork updates the project to Playnite SDK 6.18.0, the latest stable SDK at the time of this update, while retaining the .NET Framework 4.6.2 target required by Playnite 10. It hardens folder removal, persists installation state through the Playnite database, and handles per-game deletion failures without aborting the entire batch.
 
-The extension adds game menu actions to delete a game's configured Installation Directory, with a confirmation prompt. Deletion is permanent and bypasses the Recycle Bin. Verify the Installation Directory before using either action.
+The extension adds one “Uninstall and Hide” game menu action for installed, manually added games with an existing local installation folder. It permanently deletes the configured Installation Directory, bypasses the Recycle Bin, marks the game uninstalled, and hides it in the library. Verify the Installation Directory before using the action.
 
 Playnite 11 is a separate major version with a different SDK and is not covered by this update.
 
