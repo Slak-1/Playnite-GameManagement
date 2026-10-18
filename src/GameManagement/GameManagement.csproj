@@ -1,32 +1,26 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net462</TargetFramework>
+    <UseWpf>true</UseWpf>
+    <LangVersion>10</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
 
-    <PropertyGroup>
-        <TargetFramework>net462</TargetFramework>
-        <UseWpf>true</UseWpf>
-    </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="PlayniteSDK" Version="6.18.0">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.2">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
 
-    <ItemGroup>
-        <PackageReference Include="JetBrains.Annotations" Version="2022.1.0" PrivateAssets="all" />
-        <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.2">
-            <PrivateAssets>all</PrivateAssets>
-            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-        </PackageReference>
-        <PackageReference Include="Microsoft.Toolkit.HighPerformance" Version="7.1.2" />
-    </ItemGroup>
-
-    <ItemGroup>
-      <ProjectReference Include="..\Extensions.Common\Extensions.Common.csproj" />
-    </ItemGroup>
-
-    <ItemGroup>
-        <None Update="extension.yaml">
-            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-        </None>
-    </ItemGroup>
-
-    <ItemGroup>
-        <Compile Include="..\other\AssemblyLoader.cs">
-            <Link>AssemblyLoader.cs</Link>
-        </Compile>
-    </ItemGroup>
+  <ItemGroup>
+    <None Update="extension.yaml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <Compile Include="..\\Extensions.Common\\NumberExtensions.cs" Link="NumberExtensions.cs" />
+  </ItemGroup>
 </Project>
