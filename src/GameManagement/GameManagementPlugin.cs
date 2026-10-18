@@ -117,6 +117,7 @@ public class GameManagementPlugin : GenericPlugin
                     var installDirectory = GetSafeInstallDirectory(game);
                     EnsureNoOtherGameUsesDirectory(game, installDirectory);
                     Directory.Delete(installDirectory, true);
+                    RemoveEmptyParentDirectories(game, installDirectory);
                     uninstalledGames.Add(game);
                 }
                 catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
@@ -180,7 +181,8 @@ public class GameManagementPlugin : GenericPlugin
             entries.Add("And " + (games.Count - maxEntries) + " more game(s).");
         }
 
-        return "This permanently deletes the listed installation folder(s), bypassing the Recycle Bin:" +
+        return "This permanently deletes the listed installation folder(s), bypassing the Recycle Bin. " +
+               "It also removes empty parent folders, stopping at the first folder that contains any files or folders:" +
                Environment.NewLine + Environment.NewLine + string.Join(Environment.NewLine + Environment.NewLine, entries);
     }
 
@@ -195,6 +197,65 @@ public class GameManagementPlugin : GenericPlugin
         {
             throw new InvalidOperationException(
                 "The folder also contains the installation directory configured for \"" + conflict.Name + "\".");
+        }
+    }
+
+    private void RemoveEmptyParentDirectories(Game game, string installDirectory)
+    {
+        var parent = Directory.GetParent(installDirectory);
+        while (parent is not null)
+        {
+            var parentPath = parent.FullName;
+            var rootPath = Path.GetPathRoot(parentPath);
+            if (string.IsNullOrEmpty(rootPath) ||
+                string.Equals(
+                    parentPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                    rootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+
+            var otherGame = _playniteAPI.Database.Games.FirstOrDefault(candidate =>
+                candidate.Id != game.Id &&
+                !string.IsNullOrWhiteSpace(candidate.InstallDirectory) &&
+                IsSameOrChildPath(parentPath, candidate.InstallDirectory));
+            if (otherGame is not null)
+            {
+                _logger.Info("Keeping parent folder " + parentPath +
+                             " because it contains the configured installation folder for " + otherGame.Name + ".");
+                break;
+            }
+
+            try
+            {
+                if (Directory.EnumerateFileSystemEntries(parentPath).Any())
+                {
+                    break;
+                }
+
+                Directory.Delete(parentPath, false);
+                _logger.Info("Removed empty parent folder " + parentPath + ".");
+            }
+            catch (DirectoryNotFoundException)
+            {
+                break;
+            }
+            catch (IOException)
+            {
+                // Another process may have created a file or folder after the emptiness check.
+                break;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                break;
+            }
+            catch (System.Security.SecurityException)
+            {
+                break;
+            }
+
+            parent = Directory.GetParent(parentPath);
         }
     }
 
