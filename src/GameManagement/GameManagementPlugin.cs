@@ -75,8 +75,8 @@ public class GameManagementPlugin : GenericPlugin
         }
 
         var confirmation = _playniteAPI.Dialogs.ShowMessage(
-            "Do you really want to delete the installation folder for " + games.Count + " game(s)?",
-            "Confirmation",
+            BuildConfirmationMessage(games),
+            "Confirm permanent deletion",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning);
 
@@ -113,6 +113,7 @@ public class GameManagementPlugin : GenericPlugin
                     }
 
                     var installDirectory = GetSafeInstallDirectory(game);
+                    EnsureNoOtherGameUsesDirectory(game, installDirectory);
                     Directory.Delete(installDirectory, true);
                     uninstalledGames.Add(game);
                 }
@@ -128,19 +129,21 @@ public class GameManagementPlugin : GenericPlugin
 
         foreach (var game in uninstalledGames)
         {
-            game.IsInstalled = false;
-            _playniteAPI.Database.Games.Update(game);
+            try
+            {
+                game.IsInstalled = false;
+                _playniteAPI.Database.Games.Update(game);
+            }
+            catch (Exception ex)
+            {
+                failures.Add(game.Name + ": folder was deleted, but Playnite could not update its installed status.");
+                _logger.Error(ex, "Could not update Playnite's installed status for " + game.Name + ".");
+            }
+
             _storageInfo.RemoveStorageInfo(game);
         }
 
-        try
-        {
-            _storageInfo.SaveToFile(StoragePath);
-        }
-        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
-        {
-            _logger.Error(ex, "Could not save storage statistics.");
-        }
+        SaveStorageInfo();
 
         if (failures.Count > 0)
         {
@@ -151,11 +154,64 @@ public class GameManagementPlugin : GenericPlugin
             }
 
             _playniteAPI.Dialogs.ShowErrorMessage(
-                "Some game folders could not be deleted:" + Environment.NewLine + details,
+                "Some folders could not be deleted or game states could not be updated:" + Environment.NewLine + details,
                 "Game Management");
         }
 
         return uninstalledGames;
+    }
+
+    private string BuildConfirmationMessage(IList<Game> games)
+    {
+        const int maxEntries = 10;
+        var entries = games.Take(maxEntries).Select(game =>
+        {
+            var path = string.IsNullOrWhiteSpace(game.InstallDirectory)
+                ? "(no installation folder configured)"
+                : game.InstallDirectory;
+            return game.Name + Environment.NewLine + path;
+        }).ToList();
+
+        if (games.Count > maxEntries)
+        {
+            entries.Add("And " + (games.Count - maxEntries) + " more game(s).");
+        }
+
+        return "This permanently deletes the listed installation folder(s), bypassing the Recycle Bin:" +
+               Environment.NewLine + Environment.NewLine + string.Join(Environment.NewLine + Environment.NewLine, entries);
+    }
+
+    private void EnsureNoOtherGameUsesDirectory(Game game, string installDirectory)
+    {
+        var conflict = _playniteAPI.Database.Games.FirstOrDefault(otherGame =>
+            otherGame.Id != game.Id &&
+            !string.IsNullOrWhiteSpace(otherGame.InstallDirectory) &&
+            IsSameOrChildPath(installDirectory, otherGame.InstallDirectory));
+
+        if (conflict is not null)
+        {
+            throw new InvalidOperationException(
+                "The folder also contains the installation directory configured for \"" + conflict.Name + "\".");
+        }
+    }
+
+    private static bool IsSameOrChildPath(string parentPath, string candidatePath)
+    {
+        try
+        {
+            var parent = Path.GetFullPath(parentPath)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var candidate = Path.GetFullPath(candidatePath)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+            return string.Equals(parent, candidate, StringComparison.OrdinalIgnoreCase) ||
+                   candidate.StartsWith(parent + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                   candidate.StartsWith(parent + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException)
+        {
+            return false;
+        }
     }
 
     private static string GetSafeInstallDirectory(Game game)
@@ -179,6 +235,18 @@ public class GameManagementPlugin : GenericPlugin
         return fullPath;
     }
 
+    private void SaveStorageInfo()
+    {
+        try
+        {
+            _storageInfo.SaveToFile(StoragePath);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Could not save storage statistics.");
+        }
+    }
+
     public override void OnApplicationStarted(OnApplicationStartedEventArgs args)
     {
         Task.Run(() =>
@@ -186,7 +254,7 @@ public class GameManagementPlugin : GenericPlugin
             try
             {
                 _storageInfo.UpdateStorageInfoForAllNewGames();
-                _storageInfo.SaveToFile(StoragePath);
+                SaveStorageInfo();
             }
             catch (Exception ex)
             {
@@ -208,13 +276,13 @@ public class GameManagementPlugin : GenericPlugin
     public override void OnGameInstalled(OnGameInstalledEventArgs args)
     {
         _storageInfo.AddStorageInfo(args.Game);
-        _storageInfo.SaveToFile(StoragePath);
+        SaveStorageInfo();
     }
 
     public override void OnGameUninstalled(OnGameUninstalledEventArgs args)
     {
         _storageInfo.RemoveStorageInfo(args.Game);
-        _storageInfo.SaveToFile(StoragePath);
+        SaveStorageInfo();
     }
 
     public override IEnumerable<SidebarItem> GetSidebarItems()
