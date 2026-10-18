@@ -1,9 +1,9 @@
-﻿Id: GameManagement
+Id: GameManagement
 Name: Game Management Plugin
-Author: erri120
-Version: 2.0.0
+Author: Slak-1
+Version: 2.6.0
 Module: GameManagement.dll
 Type: GenericPlugin
 Links:
     - Name: GitHub
-      Url: https://github.com/erri120/Playnite.Extensions
+      Url: https://github.com/Slak-1/Playnite-GameManagement
